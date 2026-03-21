@@ -1,0 +1,94 @@
+{
+	"id": "observeclaw",
+	"configSchema": {
+		"type": "object",
+		"additionalProperties": false,
+		"properties": {
+			"enabled": {
+				"type": "boolean",
+				"default": true
+			},
+			"currency": {
+				"type": "string",
+				"enum": ["USD", "EUR"],
+				"default": "USD"
+			},
+			"budgets": {
+				"type": "object",
+				"properties": {
+					"defaults": {
+						"type": "object",
+						"properties": {
+							"daily": { "type": "number", "default": 100 },
+							"monthly": { "type": "number", "default": 2000 },
+							"warnAt": { "type": "number", "default": 0.8 }
+						}
+					},
+					"agents": {
+						"type": "object",
+						"additionalProperties": {
+							"type": "object",
+							"properties": {
+								"daily": { "type": "number" },
+								"monthly": { "type": "number" },
+								"warnAt": { "type": "number" }
+							}
+						}
+					}
+				}
+			},
+			"toolPolicy": {
+				"type": "object",
+				"properties": {
+					"defaults": {
+						"type": "object",
+						"properties": {
+							"allow": { "type": "array", "items": { "type": "string" } },
+							"deny": { "type": "array", "items": { "type": "string" } }
+						}
+					},
+					"agents": {
+						"type": "object",
+						"additionalProperties": {
+							"type": "object",
+							"properties": {
+								"allow": { "type": "array", "items": { "type": "string" } },
+								"deny": { "type": "array", "items": { "type": "string" } }
+							}
+						}
+					}
+				}
+			},
+			"anomaly": {
+				"type": "object",
+				"properties": {
+					"spendSpikeMultiplier": { "type": "number", "default": 3 },
+					"idleBurnMinutes": { "type": "number", "default": 10 },
+					"errorLoopThreshold": { "type": "number", "default": 10 },
+					"tokenInflationMultiplier": { "type": "number", "default": 2 }
+				}
+			},
+			"downgradeModel": { "type": "string", "default": "claude-haiku-4-5" },
+			"downgradeProvider": { "type": "string", "default": "anthropic" },
+			"pricing": {
+				"type": "object",
+				"additionalProperties": {
+					"type": "object",
+					"properties": {
+						"input": { "type": "number" },
+						"output": { "type": "number" },
+						"cacheRead": { "type": "number" },
+						"cacheWrite": { "type": "number" }
+					}
+				}
+			}
+		}
+	},
+	"uiHints": {
+		"enabled": { "label": "Enable ObserveClaw", "help": "Enable agent spend tracking, budget enforcement, and anomaly detection" },
+		"currency": { "label": "Currency", "help": "Currency for budget display (cost calculation is always in USD internally)" },
+		"budgets.defaults.daily": { "label": "Default Daily Budget", "help": "Default daily spend limit per agent" },
+		"budgets.defaults.monthly": { "label": "Default Monthly Budget", "help": "Default monthly spend limit per agent" },
+		"downgradeModel": { "label": "Downgrade Model", "help": "Model to force when agent approaches budget limit" }
+	}
+}

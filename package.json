@@ -1,0 +1,30 @@
+{
+	"name": "observeclaw",
+	"version": "0.0.1",
+	"description": "Agent spend tracking, budget enforcement, tool policy, and anomaly detection for OpenClaw",
+	"type": "module",
+	"files": [
+		"index.ts",
+		"api.ts",
+		"src/",
+		"openclaw.plugin.json",
+		"README.md"
+	],
+	"openclaw": {
+		"extensions": ["./index.ts"]
+	},
+	"peerDependencies": {
+		"openclaw": ">=2026.3.14"
+	},
+	"keywords": [
+		"openclaw",
+		"openclaw-plugin",
+		"agent",
+		"budget",
+		"cost",
+		"spend",
+		"anomaly",
+		"observability"
+	],
+	"license": "MIT"
+}
