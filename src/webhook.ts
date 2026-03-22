@@ -44,18 +44,22 @@ async function postWebhook(
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
-	const body = JSON.stringify({
-		source: "observeclaw",
-		alert: {
-			type: alert.type,
-			agentId: alert.agentId,
-			severity: alert.severity,
-			message: alert.message,
-			action: alert.action,
-			metric: alert.metric,
-			ts: Date.now(),
-		},
-	});
+	const isSlack = webhook.url.includes("hooks.slack.com");
+	const payload = isSlack
+		? formatSlackPayload(alert)
+		: {
+				source: "observeclaw",
+				alert: {
+					type: alert.type,
+					agentId: alert.agentId,
+					severity: alert.severity,
+					message: alert.message,
+					action: alert.action,
+					metric: alert.metric,
+					ts: Date.now(),
+				},
+			};
+	const body = JSON.stringify(payload);
 
 	try {
 		const response = await fetch(webhook.url, {
@@ -87,6 +91,7 @@ export function formatSlackPayload(alert: AnomalyAlert): Record<string, unknown>
 	const color = alert.severity === "critical" ? "#dc2626" : alert.severity === "warning" ? "#f59e0b" : "#3b82f6";
 
 	return {
+		text: `${emoji} ObserveClaw: [${alert.severity}] ${alert.agentId} — ${alert.message}`,
 		attachments: [
 			{
 				color,
