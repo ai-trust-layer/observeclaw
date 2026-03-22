@@ -1,4 +1,3 @@
-import { definePluginEntry } from "openclaw/plugin-sdk/core";
 import type { ObserveClawConfig } from "./src/types.js";
 import { DEFAULT_CONFIG } from "./src/types.js";
 import { setConfigPricing } from "./src/pricing.js";
@@ -39,12 +38,12 @@ function parseConfig(raw: Record<string, unknown> | undefined): ObserveClawConfi
 	} as ObserveClawConfig;
 }
 
-export default definePluginEntry({
+const plugin = {
 	id: "observeclaw",
 	name: "ObserveClaw",
 	description: "Agent spend tracking, budget enforcement, tool policy, and anomaly detection",
 
-	register(api) {
+	register(api: any) {
 		const config = parseConfig(api.pluginConfig as Record<string, unknown> | undefined);
 
 		if (!config.enabled) {
@@ -292,4 +291,6 @@ export default definePluginEntry({
 			}
 		});
 	},
-});
+};
+
+export default plugin;
