@@ -250,10 +250,16 @@ const plugin: any = {
 			}
 		});
 
-		// Track productive tool calls (for idle burn detection)
+		// Track productive activity (for idle burn detection)
+		// Both tool calls and successful message sends count as "productive"
 		api.on("after_tool_call", (_event, ctx) => {
 			const agentId = ctx.agentId ?? "default";
 			spendTracker.recordToolCall(agentId);
+		});
+
+		api.on("message_sent", (_event, ctx) => {
+			const agentId = (ctx as Record<string, unknown>).agentId as string | undefined;
+			if (agentId) spendTracker.recordToolCall(agentId);
 		});
 
 		// Cancel outbound messages if agent is over budget
