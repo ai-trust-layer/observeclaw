@@ -65,7 +65,8 @@
 					"spendSpikeMultiplier": { "type": "number", "default": 3 },
 					"idleBurnMinutes": { "type": "number", "default": 10 },
 					"errorLoopThreshold": { "type": "number", "default": 10 },
-					"tokenInflationMultiplier": { "type": "number", "default": 2 }
+					"tokenInflationMultiplier": { "type": "number", "default": 2 },
+					"checkIntervalSeconds": { "type": "number", "default": 30 }
 				}
 			},
 			"downgradeModel": { "type": "string", "default": "claude-haiku-4-5" },

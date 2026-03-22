@@ -88,30 +88,28 @@ async function postWebhook(
  */
 export function formatSlackPayload(alert: AnomalyAlert): Record<string, unknown> {
 	const emoji = alert.severity === "critical" ? ":rotating_light:" : alert.severity === "warning" ? ":warning:" : ":information_source:";
-	const color = alert.severity === "critical" ? "#dc2626" : alert.severity === "warning" ? "#f59e0b" : "#3b82f6";
 
 	return {
 		text: `${emoji} ObserveClaw: [${alert.severity}] ${alert.agentId} — ${alert.message}`,
-		attachments: [
+		blocks: [
 			{
-				color,
-				blocks: [
-					{
-						type: "section",
-						text: {
-							type: "mrkdwn",
-							text: `${emoji} *ObserveClaw Alert*\n*Agent:* \`${alert.agentId}\`\n*Type:* ${alert.type}\n*Message:* ${alert.message}`,
+				type: "section",
+				text: {
+					type: "mrkdwn",
+					text: `${emoji} *ObserveClaw Alert*\n*Agent:* \`${alert.agentId}\`\n*Type:* ${alert.type}\n*Message:* ${alert.message}`,
+				},
+			},
+			...(alert.action
+				? [
+						{
+							type: "context",
+							elements: [{ type: "mrkdwn", text: `Action taken: *${alert.action}*` }],
 						},
-					},
-					...(alert.action
-						? [
-								{
-									type: "context",
-									elements: [{ type: "mrkdwn", text: `Action taken: *${alert.action}*` }],
-								},
-							]
-						: []),
-				],
+					]
+				: []),
+			{
+				type: "context",
+				elements: [{ type: "mrkdwn", text: `Severity: *${alert.severity}* | Source: ObserveClaw` }],
 			},
 		],
 	};

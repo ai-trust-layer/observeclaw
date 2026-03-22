@@ -38,10 +38,11 @@ function parseConfig(raw: Record<string, unknown> | undefined): ObserveClawConfi
 	} as ObserveClawConfig;
 }
 
-const plugin = {
+const plugin: any = {
 	id: "observeclaw",
 	name: "ObserveClaw",
 	description: "Agent spend tracking, budget enforcement, tool policy, and anomaly detection",
+	_registered: false,
 
 	register(api: any) {
 		const config = parseConfig(api.pluginConfig as Record<string, unknown> | undefined);
@@ -51,6 +52,12 @@ const plugin = {
 			return;
 		}
 
+		// Guard against duplicate registration — OpenClaw may call register() in
+		// multiple contexts (CLI + gateway). Only the first registration runs
+		// timers, anomaly checks, RPC methods, and webhooks.
+		if (plugin._registered) return;
+		plugin._registered = true;
+
 		// Apply pricing overrides
 		if (Object.keys(config.pricing).length > 0) {
 			setConfigPricing(config.pricing);
@@ -59,6 +66,8 @@ const plugin = {
 		api.logger.info(
 			`[observeclaw] active | daily budget: $${config.budgets.defaults.daily} | downgrade model: ${config.downgradeModel}`,
 		);
+
+		if (!isGateway) return; // hooks + timers only run in gateway
 
 		// --- Timers ---
 
@@ -152,7 +161,7 @@ const plugin = {
 					}
 				}
 			}
-		}, 30_000);
+		}, config.anomaly.checkIntervalSeconds * 1000);
 
 		// --- Hooks ---
 

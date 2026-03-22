@@ -45,6 +45,8 @@ export interface AnomalyConfig {
 	idleBurnMinutes: number;
 	errorLoopThreshold: number;
 	tokenInflationMultiplier: number;
+	/** Anomaly check interval in seconds. Default: 30 */
+	checkIntervalSeconds: number;
 }
 
 export interface ModelPricing {
@@ -102,6 +104,7 @@ export const DEFAULT_CONFIG: ObserveClawConfig = {
 		idleBurnMinutes: 10,
 		errorLoopThreshold: 10,
 		tokenInflationMultiplier: 2,
+		checkIntervalSeconds: 30,
 	},
 	downgradeModel: "claude-haiku-4-5",
 	downgradeProvider: "anthropic",
