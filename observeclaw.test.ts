@@ -246,10 +246,9 @@ describe("anomaly-detection", () => {
 // SCENARIO SIMULATIONS — Real failure modes ObserveClaw catches
 // ============================================================================
 
-describe("scenario: Adrian's $10k cache loop", () => {
+describe("scenario: $10k runaway cache loop", () => {
 	// An agent rewrites 200k tokens of context into cache every 5 minutes,
 	// producing zero useful output, for 13 days. $10,542 burned.
-	// https://linkedin.com — Adrian Dragomir / Sferal AI
 
 	const agentId = "optimus-cache-loop";
 	const config: ObserveClawConfig = {
