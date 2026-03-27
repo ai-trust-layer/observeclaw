@@ -213,7 +213,7 @@ If the agent has spent less than the warning threshold of its daily budget, whic
 
 If the agent has spent between the warning threshold and one hundred percent of its daily budget, the plugin forces a model downgrade. It returns an override that switches the model to a cheaper alternative, by default Claude Haiku. The agent continues to function, but at lower cost per call. This gives the agent a soft landing rather than a hard stop. The plugin logs a warning and pushes a `budget_warning` alert to the alert store and all configured webhooks.
 
-If the agent has exceeded one hundred percent of its daily budget, the plugin continues to force the downgrade model and pushes a `budget_exceeded` alert with critical severity. The agent can still make calls on the cheaper model, but the cost accumulation slows dramatically because the downgrade model is significantly cheaper than the original.
+If the agent has exceeded one hundred percent of its daily budget, the plugin hard-blocks the LLM call entirely. It forces an unknown model override that causes OpenClaw to abort the request before any API call is made. The agent accumulates zero additional cost. The user sees an error message indicating the budget has been exceeded. The plugin pushes a `budget_exceeded` alert with critical severity.
 
 Per-agent budgets override the defaults. You can set a five dollar daily budget for an intern agent, a five hundred dollar budget for an engineering agent, and a twenty dollar budget for a sales agent, all on the same gateway.
 
@@ -300,7 +300,7 @@ When the gateway shuts down, the plugin clears all background timers and prints 
 | Type | Severity | Trigger | Action |
 |------|----------|---------|--------|
 | `budget_warning` | warning | Agent spend reaches the configured warning threshold (default 80% of daily budget) | Model downgraded to cheaper alternative |
-| `budget_exceeded` | critical | Agent spend exceeds 100% of daily budget | Model downgraded, outbound messages cancelled |
+| `budget_exceeded` | critical | Agent spend exceeds 100% of daily budget | LLM call hard-blocked, zero additional cost |
 | `spend_spike` | warning | Hourly spend exceeds 3x the seven-day hourly average | Alert only |
 | `idle_burn` | warning | Agent calling LLM with no useful output for more than 10 minutes | Alert only |
 | `error_loop` | critical | 10 or more consecutive LLM errors | Auto-pause recommended |
@@ -419,13 +419,13 @@ Override or extend this table using the `pricing` configuration field.
 
 The plugin does not persist spend data across gateway restarts. When the gateway stops, all in-memory counters are lost. The final spend summary is logged, but historical data is not saved to disk. This will be addressed in a future version that adds persistent telemetry storage.
 
-The plugin cannot fully stop an agent from making LLM calls when the budget is exceeded. It downgrades the model to a cheaper alternative and cancels outbound messages, but the agent process continues running and making calls on the cheaper model. The message blocking feature, by contrast, does fully prevent the LLM call from happening because it forces an unknown model override that aborts the call before any API request is made.
+The plugin cannot modify the user's message text before it reaches the language model. The routing pipeline includes an inline PII redaction feature that correctly identifies and replaces sensitive patterns, but OpenClaw's `before_prompt_build` hook can only modify the system prompt, not the user message. This means the redaction pipeline works at the data level (tests pass, redacted text is produced) but the actual prompt sent to the LLM still contains the original text. To deliver true inline redaction, a proxy between the agent and the LLM API is required. The message blocking feature works as an alternative: instead of redacting and forwarding, it blocks the message entirely so the LLM never sees it.
 
 The plugin does not hide API keys from agents. Agents still hold their own provider credentials in OpenClaw's auth profiles. A scoped proxy architecture that injects keys on behalf of agents so they never see the raw key values is described in the ObserveClaw platform documentation but is not part of this plugin.
 
 The plugin does not coordinate across multiple gateway instances. Each gateway tracks its own agents independently. Fleet-wide cost aggregation requires an external control plane.
 
-The `before_dispatch` hook, which would allow blocking messages before they enter the agent session entirely, is not available to plugins in the current version of OpenClaw. Message blocking works by forcing an unknown model override in the `before_model_resolve` hook instead. This means the blocked message does enter the session context as a user message, but the LLM call never executes and no cost is incurred. The error message shown to the user includes the configured block reply text.
+Message blocking works by forcing an unknown model override in the `before_model_resolve` hook. This causes OpenClaw to abort the LLM call before any API request is made, so zero cost is incurred. The blocked message does enter the session context as a user message, but the language model never processes it. The error message shown to the user includes the configured block reply text. Budget exceeded uses the same mechanism to hard-block all calls once the daily budget is exhausted.
 
 ## Running Tests
 
@@ -433,4 +433,4 @@ The `before_dispatch` hook, which would allow blocking messages before they ente
 pnpm test -- extensions/observeclaw/
 ```
 
-The test suite includes one hundred tests covering unit tests for pricing, spend tracking, budget enforcement, tool policy, and anomaly detection, scenario simulations that reproduce real-world failures including a runaway cache loop cost blowout, prompt injection tool exfiltration, LLM error loops, context window bloat, multi-agent fleet budgets, and spend spikes, end-to-end tests for the alert store, alert pipeline, webhook dispatch, and Slack formatting, and forty routing tests covering regex, classifier, and webhook evaluators, priority ordering, disabled evaluators, parallel execution, early exit optimization, message blocking, per-evaluator webhooks, and structured routing event emission.
+The test suite includes one hundred and seven tests covering unit tests for pricing, spend tracking, budget enforcement, tool policy, and anomaly detection, scenario simulations that reproduce real-world failures including a runaway cache loop cost blowout, prompt injection tool exfiltration, LLM error loops, context window bloat, multi-agent fleet budgets, and spend spikes, end-to-end tests for the alert store, alert pipeline, webhook dispatch, and Slack formatting, and forty-seven routing tests covering regex, classifier, and webhook evaluators, priority ordering, disabled evaluators, parallel execution with timing proof, early exit optimization, message blocking, per-evaluator webhooks, inline redaction pipeline, structured routing event emission, and prompt envelope stripping.
