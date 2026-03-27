@@ -4,29 +4,62 @@ import type {
 	RegexEvaluatorConfig,
 	ClassifierEvaluatorConfig,
 	WebhookEvaluatorConfig,
+	RedactionEntry,
 } from "./types.js";
+
+export interface RegexEvaluatorResult {
+	decision: RoutingDecision | null;
+	redactions: RedactionEntry[];
+}
 
 export function runRegexEvaluator(
 	prompt: string,
 	config: RegexEvaluatorConfig,
 	logger?: PluginLogger,
-): RoutingDecision | null {
+): RegexEvaluatorResult {
+	const redactions: RedactionEntry[] = [];
+	let matched = false;
+
 	for (const pattern of config.patterns) {
 		try {
-			const regex = new RegExp(pattern, "i");
-			if (regex.test(prompt)) {
-				return {
-					provider: config.provider,
-					model: config.model,
-					reason: `${config.name}:regex_match`,
-				};
+			if (config.action === "redact") {
+				// For redaction, use global regex to find all matches
+				const regex = new RegExp(pattern, "gi");
+				const matches = prompt.matchAll(regex);
+				for (const match of matches) {
+					matched = true;
+					redactions.push({
+						evaluator: config.name,
+						pattern,
+						original: match[0],
+						replacement: config.redactReplacement ?? "[REDACTED]",
+					});
+				}
+			} else {
+				// For route/block, just test once
+				const regex = new RegExp(pattern, "i");
+				if (regex.test(prompt)) {
+					matched = true;
+				}
 			}
 		} catch (err: unknown) {
 			const message = err instanceof Error ? err.message : String(err);
 			logger?.warn(`[observeclaw] regex evaluator ${config.name}: invalid pattern "${pattern}" — ${message}`);
 		}
 	}
-	return null;
+
+	if (!matched) {
+		return { decision: null, redactions: [] };
+	}
+
+	return {
+		decision: {
+			provider: config.provider,
+			model: config.model,
+			reason: `${config.name}:regex_match`,
+		},
+		redactions,
+	};
 }
 
 export async function runClassifierEvaluator(

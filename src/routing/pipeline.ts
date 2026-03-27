@@ -2,11 +2,44 @@ import type { PluginLogger } from "../types/plugin.js";
 import type {
 	EvaluatorConfig,
 	EvaluatorResult,
+	EvaluatorAction,
+	RedactionEntry,
 	RoutingDecision,
 	RoutingEvent,
 	RoutingPipelineResult,
 } from "./types.js";
 import { runRegexEvaluator, runClassifierEvaluator, runWebhookEvaluator } from "./evaluators.js";
+
+/**
+ * Strip OpenClaw's inbound metadata envelope from the prompt.
+ * The envelope contains "Conversation info (untrusted metadata):",
+ * "Sender (untrusted metadata):", etc. followed by JSON in triple-backtick fences.
+ * The raw user text is everything after the last metadata block.
+ */
+const METADATA_SENTINELS = [
+	"Conversation info (untrusted metadata):",
+	"Sender (untrusted metadata):",
+	"Thread starter (untrusted, for context):",
+	"Replied message (untrusted, for context):",
+	"Forwarded message context (untrusted metadata):",
+	"Chat history since last reply (untrusted, for context):",
+];
+
+function stripPromptEnvelope(prompt: string): string {
+	let text = prompt;
+	for (const sentinel of METADATA_SENTINELS) {
+		const idx = text.indexOf(sentinel);
+		if (idx === -1) continue;
+		// Find the closing ``` after the JSON block
+		const fenceStart = text.indexOf("```", idx + sentinel.length);
+		if (fenceStart === -1) continue;
+		const fenceEnd = text.indexOf("```", fenceStart + 3);
+		if (fenceEnd === -1) continue;
+		// Remove from sentinel to end of closing fence
+		text = text.slice(0, idx) + text.slice(fenceEnd + 3);
+	}
+	return text.trim();
+}
 
 /**
  * Run all enabled evaluators in parallel with early exit.
@@ -30,6 +63,7 @@ export async function runRoutingPipeline(
 		return {
 			decision: null,
 			shouldBlock: false,
+			redactions: [],
 			event: {
 				agentId,
 				promptPreview: prompt.slice(0, 120),
@@ -41,6 +75,9 @@ export async function runRoutingPipeline(
 		};
 	}
 
+	// Strip OpenClaw's metadata envelope so evaluators see raw user text
+	const strippedPrompt = stripPromptEnvelope(prompt);
+
 	const sorted = [...enabled].sort((a, b) => b.priority - a.priority);
 	const highestPriority = sorted[0]!.priority;
 	const earlyExitController = new AbortController();
@@ -51,18 +88,25 @@ export async function runRoutingPipeline(
 		let error: string | undefined;
 		let label: string | undefined;
 		let cancelled = false;
+		let redactions: RedactionEntry[] = [];
+
+		// Resolve action from config (backward compat: blockMessage → "block")
+		const action: EvaluatorAction = evaluator.action ?? (evaluator.blockMessage ? "block" : "route");
 
 		try {
 			switch (evaluator.type) {
-				case "regex":
-					decision = runRegexEvaluator(prompt, evaluator, logger);
+				case "regex": {
+					const result = runRegexEvaluator(strippedPrompt, evaluator, logger);
+					decision = result.decision;
+					redactions = result.redactions;
 					break;
+				}
 				case "classifier":
 					if (earlyExitController.signal.aborted && evaluator.priority < highestPriority) {
 						cancelled = true;
 						break;
 					}
-					decision = await runClassifierEvaluator(prompt, evaluator, logger);
+					decision = await runClassifierEvaluator(strippedPrompt, evaluator, logger);
 					if (decision?.reason) {
 						const parts = decision.reason.split(":");
 						if (parts.length > 1) label = parts[1];
@@ -73,7 +117,7 @@ export async function runRoutingPipeline(
 						cancelled = true;
 						break;
 					}
-					decision = await runWebhookEvaluator(prompt, agentId, evaluator, logger);
+					decision = await runWebhookEvaluator(strippedPrompt, agentId, evaluator, logger);
 					break;
 			}
 
@@ -83,6 +127,8 @@ export async function runRoutingPipeline(
 		} catch (err: unknown) {
 			error = err instanceof Error ? err.message : String(err);
 		}
+
+		const isBlock = action === "block" && decision !== null;
 
 		return {
 			name: evaluator.name,
@@ -95,8 +141,10 @@ export async function runRoutingPipeline(
 			label,
 			emitEvent: evaluator.emitEvent ?? false,
 			webhooks: evaluator.webhooks,
-			blockMessage: (evaluator.blockMessage ?? false) && decision !== null,
+			action,
+			blockMessage: isBlock,
 			blockReply: evaluator.blockReply,
+			redactions: redactions.length > 0 ? redactions : undefined,
 		};
 	});
 
@@ -117,10 +165,22 @@ export async function runRoutingPipeline(
 
 	const blocker = evaluatorResults.find((r) => r.blockMessage);
 
+	// Collect all redactions from all evaluators and build redacted prompt
+	const allRedactions = evaluatorResults.flatMap((r) => r.redactions ?? []);
+	let redactedPrompt: string | undefined;
+	if (allRedactions.length > 0) {
+		redactedPrompt = prompt;
+		for (const r of allRedactions) {
+			redactedPrompt = redactedPrompt.replaceAll(r.original, r.replacement);
+		}
+	}
+
 	return {
 		decision: winner?.decision ?? null,
 		shouldBlock: blocker !== undefined,
 		blockReply: blocker?.blockReply,
+		redactedPrompt,
+		redactions: allRedactions,
 		event,
 	};
 }

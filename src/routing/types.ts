@@ -4,14 +4,22 @@ export interface RoutingDecision {
 	reason: string;
 }
 
+export type EvaluatorAction = "route" | "block" | "redact";
+
 export interface BaseEvaluatorConfig {
 	name: string;
 	priority: number;
 	enabled: boolean;
 	emitEvent?: boolean;
 	webhooks?: string[];
-	blockMessage?: boolean;
+	/** What to do when this evaluator matches. Default: "route" */
+	action?: EvaluatorAction;
+	/** For action "block": reply text sent to user */
 	blockReply?: string;
+	/** For action "redact": replacement string. Default: "[REDACTED]" */
+	redactReplacement?: string;
+	/** @deprecated Use action: "block" instead */
+	blockMessage?: boolean;
 }
 
 export interface RegexEvaluatorConfig extends BaseEvaluatorConfig {
@@ -42,6 +50,13 @@ export type EvaluatorConfig =
 	| ClassifierEvaluatorConfig
 	| WebhookEvaluatorConfig;
 
+export interface RedactionEntry {
+	evaluator: string;
+	pattern: string;
+	original: string;
+	replacement: string;
+}
+
 export interface EvaluatorResult {
 	name: string;
 	type: "regex" | "classifier" | "webhook";
@@ -53,8 +68,10 @@ export interface EvaluatorResult {
 	label?: string;
 	emitEvent: boolean;
 	webhooks?: string[];
+	action: EvaluatorAction;
 	blockMessage: boolean;
 	blockReply?: string;
+	redactions?: RedactionEntry[];
 }
 
 export interface RoutingEvent {
@@ -71,4 +88,8 @@ export interface RoutingPipelineResult {
 	event: RoutingEvent;
 	shouldBlock: boolean;
 	blockReply?: string;
+	/** If any evaluator has action: "redact" and matched, this contains the redacted prompt */
+	redactedPrompt?: string;
+	/** All redactions applied, for logging/auditing */
+	redactions: RedactionEntry[];
 }

@@ -1179,3 +1179,214 @@ describe("TRUE parallel execution proof", () => {
     expect(classifier?.matched).toBe(false);
   });
 });
+
+describe("inline redaction", () => {
+  it("redacts SSN from prompt and returns redacted version", async () => {
+    const evaluators: EvaluatorConfig[] = [
+      {
+        name: "pii-redactor",
+        type: "regex",
+        priority: 90,
+        enabled: true,
+        patterns: ["\\b\\d{3}-\\d{2}-\\d{4}\\b"],
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        action: "redact",
+        redactReplacement: "[SSN-REDACTED]",
+      },
+    ];
+
+    const { redactedPrompt, redactions, decision } = await runRoutingPipeline(
+      "my SSN is 123-45-6789 please help",
+      "agent-1",
+      evaluators,
+      logger,
+    );
+
+    expect(redactedPrompt).toBe("my SSN is [SSN-REDACTED] please help");
+    expect(redactions).toHaveLength(1);
+    expect(redactions[0]?.original).toBe("123-45-6789");
+    expect(redactions[0]?.replacement).toBe("[SSN-REDACTED]");
+    expect(redactions[0]?.evaluator).toBe("pii-redactor");
+    // Redact evaluators still return a routing decision (the LLM call proceeds with cleaned prompt)
+    expect(decision?.provider).toBe("anthropic");
+  });
+
+  it("redacts multiple patterns from different evaluators", async () => {
+    const evaluators: EvaluatorConfig[] = [
+      {
+        name: "ssn-redactor",
+        type: "regex",
+        priority: 90,
+        enabled: true,
+        patterns: ["\\b\\d{3}-\\d{2}-\\d{4}\\b"],
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        action: "redact",
+        redactReplacement: "[SSN]",
+      },
+      {
+        name: "email-redactor",
+        type: "regex",
+        priority: 80,
+        enabled: true,
+        patterns: ["[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}"],
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        action: "redact",
+        redactReplacement: "[EMAIL]",
+      },
+    ];
+
+    const { redactedPrompt, redactions } = await runRoutingPipeline(
+      "my SSN is 123-45-6789 and email is ceo@bigcorp.com",
+      "agent-1",
+      evaluators,
+      logger,
+    );
+
+    expect(redactedPrompt).toBe("my SSN is [SSN] and email is [EMAIL]");
+    expect(redactions).toHaveLength(2);
+  });
+
+  it("redacts multiple occurrences of the same pattern", async () => {
+    const evaluators: EvaluatorConfig[] = [
+      {
+        name: "ssn-redactor",
+        type: "regex",
+        priority: 90,
+        enabled: true,
+        patterns: ["\\b\\d{3}-\\d{2}-\\d{4}\\b"],
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        action: "redact",
+      },
+    ];
+
+    const { redactedPrompt, redactions } = await runRoutingPipeline(
+      "SSN A: 123-45-6789, SSN B: 987-65-4321",
+      "agent-1",
+      evaluators,
+      logger,
+    );
+
+    expect(redactedPrompt).toBe("SSN A: [REDACTED], SSN B: [REDACTED]");
+    expect(redactions).toHaveLength(2);
+  });
+
+  it("uses default [REDACTED] when no replacement configured", async () => {
+    const evaluators: EvaluatorConfig[] = [
+      {
+        name: "redactor",
+        type: "regex",
+        priority: 90,
+        enabled: true,
+        patterns: ["\\b\\d{3}-\\d{2}-\\d{4}\\b"],
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        action: "redact",
+        // no redactReplacement
+      },
+    ];
+
+    const { redactedPrompt } = await runRoutingPipeline(
+      "SSN: 123-45-6789",
+      "agent-1",
+      evaluators,
+      logger,
+    );
+
+    expect(redactedPrompt).toBe("SSN: [REDACTED]");
+  });
+
+  it("does not produce redactedPrompt when no redact evaluators match", async () => {
+    const evaluators: EvaluatorConfig[] = [
+      {
+        name: "router",
+        type: "regex",
+        priority: 50,
+        enabled: true,
+        patterns: [".*"],
+        provider: "cheap",
+        model: "tiny",
+        action: "route",
+      },
+    ];
+
+    const { redactedPrompt, redactions } = await runRoutingPipeline(
+      "hello world",
+      "agent-1",
+      evaluators,
+      logger,
+    );
+
+    expect(redactedPrompt).toBeUndefined();
+    expect(redactions).toHaveLength(0);
+  });
+
+  it("redaction and routing coexist: redactor cleans prompt, router picks model", async () => {
+    const evaluators: EvaluatorConfig[] = [
+      {
+        name: "pii-redactor",
+        type: "regex",
+        priority: 90,
+        enabled: true,
+        patterns: ["\\b\\d{3}-\\d{2}-\\d{4}\\b"],
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        action: "redact",
+        redactReplacement: "[PII]",
+      },
+      {
+        name: "catch-all-router",
+        type: "regex",
+        priority: 50,
+        enabled: true,
+        patterns: [".*"],
+        provider: "openai",
+        model: "gpt-4o-mini",
+        action: "route",
+      },
+    ];
+
+    const { decision, redactedPrompt, redactions } = await runRoutingPipeline(
+      "help with SSN 123-45-6789",
+      "agent-1",
+      evaluators,
+      logger,
+    );
+
+    // Redactor at priority 90 wins the routing decision
+    expect(decision?.provider).toBe("anthropic");
+    // Prompt is redacted
+    expect(redactedPrompt).toBe("help with SSN [PII]");
+    expect(redactions).toHaveLength(1);
+  });
+
+  it("redaction event includes redaction details", async () => {
+    const evaluators: EvaluatorConfig[] = [
+      {
+        name: "redactor",
+        type: "regex",
+        priority: 90,
+        enabled: true,
+        patterns: ["\\b\\d{3}-\\d{2}-\\d{4}\\b"],
+        provider: "x",
+        model: "y",
+        action: "redact",
+      },
+    ];
+
+    const { event } = await runRoutingPipeline(
+      "SSN: 123-45-6789",
+      "agent-1",
+      evaluators,
+      logger,
+    );
+
+    const redactor = event.evaluators.find((e) => e.name === "redactor");
+    expect(redactor?.action).toBe("redact");
+    expect(redactor?.redactions).toHaveLength(1);
+    expect(redactor?.redactions?.[0]?.original).toBe("123-45-6789");
+  });
+});

@@ -12,6 +12,7 @@ import { validateRoutingOnStartup, handleBeforeModelResolve } from "./src/hooks/
 import { handleBeforeToolCall, handleAfterToolCall } from "./src/hooks/tool-hooks.js";
 import { handleMessageSending, handleMessageSent } from "./src/hooks/message-hooks.js";
 import { handleSessionStart, handleSessionEnd, handleGatewayStart, handleGatewayStop } from "./src/hooks/lifecycle.js";
+import { handleBeforePromptBuild } from "./src/hooks/prompt-build.js";
 
 function parseConfig(raw: Record<string, unknown> | undefined): ObserveClawConfig {
 	if (!raw) return DEFAULT_CONFIG;
@@ -163,6 +164,10 @@ const plugin = {
 		api.on("before_model_resolve", async (event: unknown, ctx: unknown) =>
 			handleBeforeModelResolve(event as { prompt?: string }, ctx as Parameters<typeof handleBeforeModelResolve>[1], config, api.logger, broadcastAlert),
 			{ priority: -10 },
+		);
+
+		api.on("before_prompt_build", (event: unknown, ctx: unknown) =>
+			handleBeforePromptBuild(event as { prompt?: string }, ctx as { agentId?: string }, api.logger),
 		);
 
 		api.on("before_tool_call", (event: unknown, ctx: unknown) =>
