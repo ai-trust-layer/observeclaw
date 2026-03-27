@@ -38,7 +38,10 @@
 								"timeoutMs": { "type": "number" },
 								"emitEvent": { "type": "boolean", "default": false },
 								"webhooks": { "type": "array", "items": { "type": "string" } },
-								"action": { "type": "string", "enum": ["route", "block", "redact"], "default": "route" },
+								"action": { "type": "string", "enum": ["route", "block", "proxy"], "default": "route" },
+								"proxyProvider": { "type": "string" },
+								"proxyModel": { "type": "string" },
+								"proxyUrl": { "type": "string" },
 								"blockMessage": { "type": "boolean", "default": false },
 								"blockReply": { "type": "string" },
 								"redactReplacement": { "type": "string", "default": "[REDACTED]" }

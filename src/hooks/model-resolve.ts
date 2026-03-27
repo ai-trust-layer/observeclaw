@@ -5,7 +5,8 @@ import { checkBudget } from "../budget-enforcer.js";
 import { runRoutingPipeline } from "../routing/pipeline.js";
 import { validateEvaluators } from "../routing/validation.js";
 import { dispatchWebhooks } from "../webhook.js";
-import { setPendingRedaction } from "./prompt-build.js";
+// setPendingRedaction removed — "redact" action was a no-op (can't modify user messages)
+// import { setPendingRedaction } from "./prompt-build.js";
 
 export function validateRoutingOnStartup(config: ObserveClawConfig, logger: PluginLogger): void {
 	if (!config.routing.enabled || config.routing.evaluators.length === 0) return;
@@ -63,13 +64,12 @@ export async function handleBeforeModelResolve(
 	if (!config.routing.enabled || config.routing.evaluators.length === 0) return;
 
 	const prompt = event.prompt ?? "";
-	const { decision: routeDecision, event: routingEvent, shouldBlock, blockReply, redactedPrompt, redactions } =
+	const { decision: routeDecision, event: routingEvent, shouldBlock, blockReply, redactions } =
 		await runRoutingPipeline(prompt, agentId, config.routing.evaluators, logger);
 
-	// If any evaluator produced redactions, store them for before_prompt_build
-	if (redactedPrompt && redactions.length > 0) {
-		setPendingRedaction(agentId, redactedPrompt, redactions);
-		logger.info(`[observeclaw] ${agentId} | ${redactions.length} redaction(s) queued for prompt build`);
+	// Log PII detections for proxy action (proxy server handles actual redaction)
+	if (redactions.length > 0) {
+		logger.info(`[observeclaw] ${agentId} | ${redactions.length} PII match(es) detected — routing through proxy provider`);
 	}
 
 	// Log routing decision

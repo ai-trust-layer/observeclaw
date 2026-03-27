@@ -22,8 +22,8 @@ export function runRegexEvaluator(
 
 	for (const pattern of config.patterns) {
 		try {
-			if (config.action === "redact") {
-				// For redaction, use global regex to find all matches
+			if (config.action === "proxy") {
+				// For proxy, use global regex to find all PII matches (audit trail)
 				const regex = new RegExp(pattern, "gi");
 				const matches = prompt.matchAll(regex);
 				for (const match of matches) {
@@ -52,11 +52,18 @@ export function runRegexEvaluator(
 		return { decision: null, redactions: [] };
 	}
 
+	// For proxy action, route to the configured proxy provider instead of the
+	// evaluator's default provider/model. The proxy provider should be configured
+	// in openclaw.json with a baseUrl pointing to the redaction proxy server.
+	const action = config.action ?? "route";
+	const provider = action === "proxy" && config.proxyProvider ? config.proxyProvider : config.provider;
+	const model = action === "proxy" && config.proxyModel ? config.proxyModel : config.model;
+
 	return {
 		decision: {
-			provider: config.provider,
-			model: config.model,
-			reason: `${config.name}:regex_match`,
+			provider,
+			model,
+			reason: `${config.name}:${action === "proxy" ? "pii_proxy" : "regex_match"}`,
 		},
 		redactions,
 	};
@@ -106,13 +113,13 @@ export async function runClassifierEvaluator(
 		// Exact match
 		const route = config.routes[label];
 		if (route) {
-			return { provider: route.provider, model: route.model, reason: `${config.name}:${label}` };
+			return { provider: route.provider ?? "__blocked__", model: route.model ?? "__blocked__", reason: `${config.name}:${label}` };
 		}
 
 		// Partial match
 		for (const [key, value] of Object.entries(config.routes)) {
 			if (label.includes(key.toLowerCase())) {
-				return { provider: value.provider, model: value.model, reason: `${config.name}:${key}` };
+				return { provider: value.provider ?? "__blocked__", model: value.model ?? "__blocked__", reason: `${config.name}:${key}` };
 			}
 		}
 

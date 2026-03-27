@@ -1,27 +1,28 @@
 import type { PluginLogger } from "../types/plugin.js";
-import type { RedactionEntry } from "../routing/types.js";
 
-// Module-level state shared with model-resolve.ts
-const pendingRedactions = new Map<string, { redactedPrompt: string; redactions: RedactionEntry[] }>();
+// NOTE: The "redact" action was removed because OpenClaw's before_prompt_build
+// hook can only modify the system prompt, not user messages. PII redaction is
+// now handled by the "proxy" action which routes through an external redaction
+// proxy server (redaction-proxy.py) that strips PII before forwarding to the
+// real LLM provider.
+//
+// The setPendingRedaction / handleBeforePromptBuild flow below is commented out
+// since it never actually worked for user message content.
 
-export function setPendingRedaction(agentId: string, redactedPrompt: string, redactions: RedactionEntry[]): void {
-	pendingRedactions.set(agentId, { redactedPrompt, redactions });
-}
+// import type { RedactionEntry } from "../routing/types.js";
+//
+// const pendingRedactions = new Map<string, { redactedPrompt: string; redactions: RedactionEntry[] }>();
+//
+// export function setPendingRedaction(agentId: string, redactedPrompt: string, redactions: RedactionEntry[]): void {
+// 	pendingRedactions.set(agentId, { redactedPrompt, redactions });
+// }
 
 export function handleBeforePromptBuild(
-	event: { prompt?: string },
-	ctx: { agentId?: string },
-	logger: PluginLogger,
-): { prompt?: string } | undefined {
-	const agentId = ctx.agentId ?? "default";
-	const pending = pendingRedactions.get(agentId);
-	if (!pending) return;
-
-	pendingRedactions.delete(agentId);
-
-	logger.info(
-		`[observeclaw] redacted ${pending.redactions.length} PII match(es) for ${agentId}: ${pending.redactions.map((r) => `"${r.original}" → "${r.replacement}"`).join(", ")}`,
-	);
-
-	return { prompt: pending.redactedPrompt };
+	_event: { prompt?: string },
+	_ctx: { agentId?: string },
+	_logger: PluginLogger,
+): undefined {
+	// No-op: redaction via before_prompt_build does not work for user messages.
+	// Use action: "proxy" with a redaction proxy server instead.
+	return undefined;
 }

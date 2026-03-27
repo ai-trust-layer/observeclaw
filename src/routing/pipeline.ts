@@ -165,21 +165,16 @@ export async function runRoutingPipeline(
 
 	const blocker = evaluatorResults.find((r) => r.blockMessage);
 
-	// Collect all redactions from all evaluators and build redacted prompt
+	// Collect redaction entries for audit logging (proxy action uses these)
+	// NOTE: redactedPrompt was removed — before_prompt_build cannot modify user
+	// messages so building a redacted string here was pointless. The "proxy"
+	// action routes through an external proxy that strips PII server-side.
 	const allRedactions = evaluatorResults.flatMap((r) => r.redactions ?? []);
-	let redactedPrompt: string | undefined;
-	if (allRedactions.length > 0) {
-		redactedPrompt = prompt;
-		for (const r of allRedactions) {
-			redactedPrompt = redactedPrompt.replaceAll(r.original, r.replacement);
-		}
-	}
 
 	return {
 		decision: winner?.decision ?? null,
 		shouldBlock: blocker !== undefined,
 		blockReply: blocker?.blockReply,
-		redactedPrompt,
 		redactions: allRedactions,
 		event,
 	};

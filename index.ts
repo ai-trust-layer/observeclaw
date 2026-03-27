@@ -184,7 +184,7 @@ const plugin = {
 
 		api.on("session_start", (_event: unknown, ctx: unknown) => handleSessionStart(_event, ctx as Parameters<typeof handleSessionStart>[1], api.logger));
 		api.on("session_end", (_event: unknown, ctx: unknown) => handleSessionEnd(_event, ctx as Parameters<typeof handleSessionEnd>[1], api.logger));
-		api.on("gateway_start", () => handleGatewayStart(api.logger));
+		api.on("gateway_start", () => handleGatewayStart(config, api.logger));
 		api.on("gateway_stop", () => handleGatewayStop(api.logger, clearTimers));
 	},
 };

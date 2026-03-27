@@ -4,7 +4,9 @@ export interface RoutingDecision {
 	reason: string;
 }
 
-export type EvaluatorAction = "route" | "block" | "redact";
+// "redact" was removed — before_prompt_build cannot modify user messages.
+// Use "proxy" to route PII messages through a redaction proxy server instead.
+export type EvaluatorAction = "route" | "block" | "proxy";
 
 export interface BaseEvaluatorConfig {
 	name: string;
@@ -18,6 +20,12 @@ export interface BaseEvaluatorConfig {
 	blockReply?: string;
 	/** For action "redact": replacement string. Default: "[REDACTED]" */
 	redactReplacement?: string;
+	/** For action "proxy": provider ID whose baseUrl points to the redaction proxy */
+	proxyProvider?: string;
+	/** For action "proxy": model to request through the proxy (default: keep original) */
+	proxyModel?: string;
+	/** For action "proxy": base URL of the proxy server (used to push patterns on startup) */
+	proxyUrl?: string;
 	/** @deprecated Use action: "block" instead */
 	blockMessage?: boolean;
 }
@@ -34,7 +42,7 @@ export interface ClassifierEvaluatorConfig extends BaseEvaluatorConfig {
 	url: string;
 	classifierModel: string;
 	prompt: string;
-	routes: Record<string, { provider: string; model: string }>;
+	routes: Record<string, { provider?: string; model?: string }>;
 	timeoutMs?: number;
 }
 
@@ -88,8 +96,8 @@ export interface RoutingPipelineResult {
 	event: RoutingEvent;
 	shouldBlock: boolean;
 	blockReply?: string;
-	/** If any evaluator has action: "redact" and matched, this contains the redacted prompt */
-	redactedPrompt?: string;
-	/** All redactions applied, for logging/auditing */
+	// redactedPrompt removed — before_prompt_build can't modify user messages.
+	// Use action: "proxy" to route through a redaction proxy server instead.
+	/** All PII matches detected, for audit logging */
 	redactions: RedactionEntry[];
 }
