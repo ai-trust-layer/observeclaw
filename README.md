@@ -1,8 +1,8 @@
 # ObserveClaw
 
-Agent spend tracking, budget enforcement, per-message model routing, message blocking, tool policy, anomaly detection, and webhook alerting for OpenClaw.
+Agent spend tracking, budget enforcement, per-message model routing, PII redaction proxy, prompt injection blocking, tool policy, anomaly detection, and webhook alerting for OpenClaw.
 
-ObserveClaw is an OpenClaw plugin that monitors how much each agent spends on language model calls, enforces daily and monthly budgets, routes messages to different models based on configurable evaluators, blocks messages containing sensitive data before they reach any AI model, controls which tools each agent can use, detects anomalous spending patterns, and sends alerts to external services when something goes wrong. It runs entirely inside the OpenClaw gateway process with no external dependencies. Every feature works across all channels — Telegram, Slack, Discord, CLI, webhooks, and any other channel OpenClaw supports — without any channel-specific configuration.
+ObserveClaw is an OpenClaw plugin that monitors how much each agent spends on language model calls, enforces daily and monthly budgets, routes messages to different models based on configurable evaluators, strips PII from messages via an external redaction proxy before they reach any AI model, blocks unsafe or malicious messages using LlamaGuard or any safety classifier, controls which tools each agent can use, detects anomalous spending patterns, and sends alerts to external services when something goes wrong. It runs entirely inside the OpenClaw gateway process with no external dependencies beyond an optional companion server for PII redaction and local classification. Every feature works across all channels — Telegram, Slack, Discord, CLI, webhooks, and any other channel OpenClaw supports — without any channel-specific configuration.
 
 ## Installation
 
@@ -95,46 +95,82 @@ plugins:
       enabled: true                    # Enable the routing pipeline. Default: false.
       logRouting: true                 # Log every routing decision to the gateway log.
       evaluators:
-        - name: "pii-blocker"          # Human-readable name for logs and events.
-          type: "regex"                # Evaluator type: "regex", "classifier", or "webhook".
-          priority: 100                # Higher number wins when multiple evaluators match. No duplicates allowed.
+
+        # Block dangerous patterns instantly (regex, ~0ms)
+        - name: "exec-injection-blocker"
+          type: "regex"
+          priority: 100
           enabled: true
-          patterns:                    # Regex patterns to match against the prompt. Case-insensitive.
+          patterns:
+            - "\\b(rm\\s+-rf|sudo\\s+|chmod\\s+777)"
+            - "\\b(curl\\s+.*\\|\\s*sh|wget\\s+.*\\|\\s*bash)"
+            - "ignore\\s+(all\\s+)?previous\\s+instructions"
+            - "you\\s+are\\s+now\\s+(a|an)\\s+"
+            - "\\[SYSTEM\\]|\\[INST\\]"
+          provider: "openai-codex"
+          model: "gpt-5.4"
+          action: "block"
+          blockReply: "Message blocked: detected command injection or prompt manipulation."
+          emitEvent: true
+
+        # Block unsafe content via LlamaGuard on Ollama (~200-500ms)
+        - name: "llamaguard-safety"
+          type: "classifier"
+          priority: 95
+          enabled: true
+          url: "http://localhost:11434/v1/chat/completions"
+          classifierModel: "llama-guard3:1b"
+          prompt: "{{message}}"
+          action: "block"
+          blockReply: "Message blocked by safety filter."
+          routes:
+            unsafe: {}                 # No provider/model needed for block action.
+          timeoutMs: 2000
+          emitEvent: true
+
+        # Route PII through redaction proxy (~0ms detection, proxy strips before forwarding)
+        - name: "pii-proxy"
+          type: "regex"
+          priority: 90
+          enabled: true
+          patterns:
             - "\\b\\d{3}-\\d{2}-\\d{4}\\b"               # SSN
             - "[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}"   # Email
             - "\\b\\d{4}[\\s-]?\\d{4}[\\s-]?\\d{4}[\\s-]?\\d{4}\\b"  # Credit card
-          provider: "ollama"           # Where to route if matched.
-          model: "llama3:8b"           # Which model to use if matched.
-          blockMessage: true           # Block the message entirely. It never reaches any AI model.
-          blockReply: "Message blocked: contains sensitive data. This message was not sent to any AI model."
-          emitEvent: true              # Emit a webhook event when this evaluator matches.
-          webhooks:                    # Per-evaluator webhook URLs. Separate from global webhooks.
+          provider: "anthropic"
+          model: "claude-sonnet-4-6"
+          action: "proxy"
+          proxyProvider: "redaction-proxy"    # Provider configured with proxy baseUrl.
+          proxyModel: "claude-sonnet-4-6"    # Model to request through the proxy.
+          proxyUrl: "http://localhost:8443"   # Proxy server URL. Patterns pushed here on startup.
+          redactReplacement: "[PII-REDACTED]"
+          emitEvent: true
+          webhooks:
             - "https://dlp-siem.internal/ingest"
-            - "https://security-alerts.internal/hook"
 
-        - name: "complexity-classifier"
-          type: "classifier"           # Calls a local LLM to classify the message.
+        # Route complex queries to a powerful model (~7ms local HF inference)
+        - name: "complexity-router"
+          type: "classifier"
           priority: 50
           enabled: true
-          url: "http://localhost:11434/v1/chat/completions"   # Any OpenAI-compatible endpoint.
-          classifierModel: "llama3:8b" # Model to use for classification.
-          prompt: "Classify this user message as 'simple' or 'complex'. Respond with one word only. Message: {{message}}"
-          routes:                      # Map classifier output labels to provider/model pairs.
+          url: "http://localhost:8443/v1/chat/completions"
+          classifierModel: "query-complexity"
+          prompt: "{{message}}"
+          routes:
             simple:
-              provider: "openai"
-              model: "gpt-4o-mini"
+              provider: "openai-codex"
+              model: "gpt-5.4"
             complex:
               provider: "anthropic"
               model: "claude-sonnet-4-6"
-          timeoutMs: 3000              # Timeout for the classifier call. Default 3000.
+          timeoutMs: 3000
           emitEvent: false
-          webhooks:
-            - "https://cost-tracking.internal/hook"
 
+        # External routing webhook
         - name: "external-router"
-          type: "webhook"              # Sends prompt + agentId to an external service, expects provider/model back.
+          type: "webhook"
           priority: 30
-          enabled: true
+          enabled: false
           url: "https://router.internal/decide"
           headers:
             Authorization: "Bearer secret-token"
@@ -193,6 +229,27 @@ plugins:
         timeoutMs: 3000
 ```
 
+### Provider configuration for the PII proxy
+
+The `proxyProvider` in the evaluator config must point to a provider configured in your OpenClaw models config with the proxy server's base URL and the real upstream API key. The proxy forwards auth headers from the incoming request, so no API key is needed on the proxy server itself.
+
+```yaml
+models:
+  providers:
+    redaction-proxy:
+      baseUrl: "http://localhost:8443"
+      apiKey: "sk-ant-your-real-key"   # Real Anthropic key — proxy forwards it.
+      api: "anthropic-messages"
+      models:
+        - id: "claude-sonnet-4-6"
+          name: "Claude Sonnet 4.6 (via redaction proxy)"
+          reasoning: true
+          input: ["text", "image"]
+          cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }
+          contextWindow: 200000
+          maxTokens: 64000
+```
+
 ## How It Works
 
 ### Spend tracking
@@ -201,7 +258,7 @@ Every time any agent on this gateway makes a call to a language model, OpenClaw 
 
 The calculated cost is accumulated in an in-memory data structure that tracks each agent's total spend today, total spend this month, cost in the current rolling hour, a seven-day history of hourly costs, the number of LLM calls made, and the sizes of recent input token payloads. If the agent's call is associated with a specific session, the plugin also tracks per-session spend breakdowns including the session's total cost, total tokens by type, and call count.
 
-After recording the cost, the plugin logs a line showing the agent's name, the cost of this individual call, the cumulative spend for today, and which provider and model were used. For example: `[observeclaw] sales-agent | call: $0.1050 | today: $12.34 | anthropic/claude-sonnet-4-6`. If the model is not in the pricing table and no custom pricing is configured, the plugin logs a warning with the raw token counts so the operator can add a pricing override.
+After recording the cost, the plugin logs a line showing the agent's name, the cost of this individual call, the cumulative spend for today, and which provider and model were used. If the model is not in the pricing table and no custom pricing is configured, the plugin logs a warning with the raw token counts so the operator can add a pricing override.
 
 The pricing table can be overridden via configuration. If you are using a custom model or a provider whose pricing differs from the defaults, you add an entry to the pricing config with the provider and model name as the key and the per-million-token costs as the value. Wildcard matching is supported, so you can set all Ollama models to zero cost with a single entry like `"ollama/*"`.
 
@@ -227,19 +284,41 @@ Every pipeline run produces a structured routing event that records which evalua
 
 There are three types of evaluators.
 
-**Regex evaluators** match the prompt against one or more regular expression patterns. They are synchronous and effectively instant. They are best suited for detecting known patterns like social security numbers, email addresses, credit card numbers, or specific keywords. Each regex evaluator specifies a provider and model to route to if any pattern matches.
+**Regex evaluators** match the prompt against one or more regular expression patterns. They are synchronous and effectively instant. They are best suited for detecting known patterns like social security numbers, email addresses, credit card numbers, or specific keywords. Each regex evaluator specifies a provider and model to route to if any pattern matches. Regex evaluators support three actions: `route` sends the message to the specified provider and model, `block` prevents the message from reaching any AI model, and `proxy` routes the message through an external redaction proxy that strips matched content before forwarding to the real LLM.
 
-**Classifier evaluators** send the prompt to a local or remote language model endpoint, such as Ollama or vLLM, with a classification prompt template. The template uses `{{message}}` as a placeholder that gets replaced with the actual prompt. The classifier model responds with a label like "simple" or "complex", and the evaluator maps that label to a provider and model pair using its routes configuration. If the classifier returns an unrecognized label, the evaluator returns null and does not claim the message. Classifier evaluators support partial label matching, so if the classifier responds with "I think this is a complex task" instead of just "complex", the evaluator will still match the "complex" route. Classifier evaluators have a configurable timeout that defaults to three seconds.
+**Classifier evaluators** send the prompt to a local or remote language model endpoint, such as Ollama or vLLM, with a classification prompt template. The template uses `{{message}}` as a placeholder that gets replaced with the actual prompt. The classifier model responds with a label like "simple" or "complex", and the evaluator maps that label to a provider and model pair using its routes configuration. If the classifier returns an unrecognized label, the evaluator returns null and does not claim the message. Classifier evaluators support partial label matching, so if the classifier responds with "unsafe\nS1" instead of just "unsafe", the evaluator will still match the "unsafe" route. Classifier evaluators have a configurable timeout that defaults to three seconds. Classifier evaluators support `action: "block"` for safety filtering: when configured with block action and a route matches, the message is blocked entirely. Routes for block-only classifiers do not require provider or model fields.
 
 **Webhook evaluators** send the prompt and agent ID as a JSON POST request to an external URL and expect a JSON response containing a provider and model field. If the response contains both fields, the evaluator claims the message with that routing decision. If the response does not contain both fields, the evaluator returns null. Webhook evaluators support custom headers for authentication and a configurable timeout that defaults to two seconds.
 
+### PII redaction via proxy
+
+The `proxy` action solves the problem of PII reaching language models. OpenClaw's hook system cannot modify user message content before it reaches the LLM, so in-place redaction is not possible. Instead, the plugin routes PII-containing messages through an external redaction proxy server that intercepts the API call, strips sensitive data from the message content, and forwards the cleaned request to the real LLM provider.
+
+When a regex evaluator with `action: "proxy"` matches PII patterns in the prompt, it returns a routing decision that points to the proxy provider instead of the evaluator's default provider. The proxy provider is configured in OpenClaw's models config with a `baseUrl` pointing to the redaction proxy server and the real upstream API key. The gateway sends the request to the proxy with the real auth headers. The proxy strips PII from user messages, forwards the cleaned request to the upstream provider, and streams the response back.
+
+The plugin pushes PII patterns to the proxy server dynamically on gateway startup via `POST /config/patterns`. The proxy starts with zero hardcoded patterns. When the gateway boots, the plugin reads the regex patterns from each proxy evaluator's config and sends them to the proxy URL specified in the `proxyUrl` field. This means all pattern management happens in the plugin config. Updating patterns requires only a config change and a gateway restart.
+
+The proxy server forwards auth headers from the incoming request, including `x-api-key`, `authorization`, `anthropic-version`, and `anthropic-beta`. No API key or secret needs to be stored on the proxy server itself. The real key is configured in the proxy provider's OpenClaw config and sent by the gateway as part of the normal request flow.
+
+Redaction entries are still collected by the plugin for audit logging even when using the proxy action. The plugin logs how many PII matches were detected and that the message is being routed through the proxy, providing an audit trail without performing the redaction itself.
+
+### Prompt injection and safety blocking
+
+Prompt injection detection uses a two-layer approach. The first layer is a high-priority regex evaluator that catches known injection patterns instantly, such as "ignore previous instructions", "[SYSTEM]", "[INST]", and shell command patterns. This layer runs in zero milliseconds and blocks obvious attacks before any network call is made.
+
+The second layer is a classifier evaluator running a safety model like LlamaGuard via Ollama. LlamaGuard responds with "safe" or "unsafe\nS1,S2" where S1 and S2 are violated safety categories. The classifier evaluator with `action: "block"` maps the "unsafe" label to a block decision. Safe messages pass through without any routing override.
+
+Because all evaluators run in parallel with early exit, the regex layer at priority 100 catches and blocks obvious injections before the LlamaGuard classifier at priority 95 even starts its network call. For sophisticated attacks that bypass simple regex patterns, LlamaGuard provides the second line of defense. The total latency for a blocked obvious injection is zero milliseconds. The total latency for a blocked sophisticated attack is the LlamaGuard inference time, typically two hundred to five hundred milliseconds on CPU.
+
+Any OpenAI-compatible safety endpoint works as a classifier evaluator. LlamaGuard via Ollama is one option. You can also use a custom safety model hosted on vLLM, a remote moderation API, or any service that returns a label in the standard chat completions response format. The plugin does not hardcode any model names or safety service URLs.
+
 ### Message blocking
 
-Any evaluator can be configured with `blockMessage: true` to block messages entirely instead of routing them. When a blocking evaluator matches, the message never reaches any language model. The plugin forces an unknown model override that causes OpenClaw to abort the call before any API request is made. The agent accumulates zero cost for the blocked message. The user sees an error message that includes the configured `blockReply` text.
+Any evaluator can be configured with `action: "block"` to block messages entirely instead of routing them. When a blocking evaluator matches, the message never reaches any language model. The plugin forces an unknown model override that causes OpenClaw to abort the call before any API request is made. The agent accumulates zero cost for the blocked message. The user sees an error message that includes the configured `blockReply` text.
 
-Blocking takes priority over routing. If a regex evaluator at priority 30 has `blockMessage: true` and a classifier at priority 50 also matches, the message is still blocked because blocking is checked across all matched evaluators, not just the winner. This means you can have a low-priority PII blocker that always blocks sensitive data regardless of what the higher-priority routing evaluators decide.
+Blocking takes priority over routing. If a regex evaluator at priority 30 has `action: "block"` and a classifier at priority 50 also matches, the message is still blocked because blocking is checked across all matched evaluators, not just the winner. This means you can have a low-priority PII blocker that always blocks sensitive data regardless of what the higher-priority routing evaluators decide.
 
-This is critical for data loss prevention. If an agent receives a message containing a social security number, credit card number, or email address, the blocking evaluator prevents that data from ever leaving the machine. The language model never sees it, so there is no risk of the model memorizing, repeating, or exfiltrating the sensitive data. The blocked message is not added to the conversation context either, so subsequent messages to the agent do not contain the sensitive data in their history.
+This is critical for data loss prevention. If an agent receives a message containing a social security number, credit card number, or email address, the blocking evaluator prevents that data from ever leaving the machine. The language model never sees it, so there is no risk of the model memorizing, repeating, or exfiltrating the sensitive data.
 
 ### Per-evaluator webhook routing
 
@@ -257,21 +336,19 @@ When a tool is blocked, the plugin returns a block response with a reason string
 
 Tool policies are configured per agent. This means you can give a support agent access to search and read tools only, while giving an engineering agent full access to exec and shell tools. An agent with no tool policy configured inherits the global defaults, which by default allow all tools.
 
-This is particularly important for security. If an agent is prompt-injected through a malicious webpage or user input, the attacker might try to make the agent call exec, shell, or curl to exfiltrate data. With a deny list or an allow list in place, these calls are blocked before they execute, regardless of what the language model was tricked into requesting.
-
 ### Anomaly detection
 
 At a configurable interval that defaults to every thirty seconds, the plugin evaluates five rule-based anomaly detectors against every tracked agent.
 
-**Spend spike.** Compares the agent's cost in the current rolling hour against the average hourly cost from its seven-day history. If the current hour's cost exceeds three times the historical average, it fires a warning alert. This catches situations where someone changes an agent's model from Sonnet to Opus without updating the budget, or where unexpected traffic causes a cost surge.
+**Spend spike.** Compares the agent's cost in the current rolling hour against the average hourly cost from its seven-day history. If the current hour's cost exceeds three times the historical average, it fires a warning alert.
 
-**Idle burn.** Checks whether the agent has been making LLM calls but has not produced any useful output for more than ten minutes. The plugin considers both tool calls and successfully sent messages as productive output. If the agent is having a normal conversation and responding to the user, the idle timer resets with every response. If the agent is looping internally and making LLM calls without ever responding or using tools, the idle timer grows and eventually fires. This catches agents stuck in a loop, burning tokens but producing zero useful output, which is the exact failure mode where one company lost over ten thousand dollars in thirteen days from a misconfigured cache loop.
+**Idle burn.** Checks whether the agent has been making LLM calls but has not produced any useful output for more than ten minutes. The plugin considers both tool calls and successfully sent messages as productive output. If the agent is looping internally and making LLM calls without ever responding or using tools, the idle timer grows and eventually fires.
 
-**Error loop.** Checks whether the agent has accumulated ten or more consecutive LLM errors without any successful call in between. If so, it fires a critical alert and marks the agent for auto-pause. This catches agents stuck retrying against a rate-limited API, agents with malformed prompts that always fail, or agents whose API keys have expired. A single successful call resets the counter, so transient errors do not trigger false positives.
+**Error loop.** Checks whether the agent has accumulated ten or more consecutive LLM errors without any successful call in between. If so, it fires a critical alert and marks the agent for auto-pause. A single successful call resets the counter, so transient errors do not trigger false positives.
 
-**Token inflation.** Compares the average input token count in the first half of the agent's recent calls against the second half. If the input size has doubled, it fires an informational alert. This catches context windows that are growing without compaction, which predicts future cost spikes as larger inputs cost more money.
+**Token inflation.** Compares the average input token count in the first half of the agent's recent calls against the second half. If the input size has doubled, it fires an informational alert. This catches context windows that are growing without compaction.
 
-**Budget warning.** Fires a one-time warning when the agent reaches eighty percent of its daily budget. It does not repeat until the daily counters reset at midnight. This gives the operator advance notice before the budget enforcer starts downgrading models.
+**Budget warning.** Fires a one-time warning when the agent reaches eighty percent of its daily budget. It does not repeat until the daily counters reset at midnight.
 
 ### Alerts and notifications
 
@@ -281,19 +358,35 @@ Alerts are accessible through three interfaces.
 
 **Gateway RPC methods.** Any client connected to the gateway via WebSocket can call `observeclaw.spend` to get all agents' spend summaries plus the fifty most recent alerts, `observeclaw.alerts` to get only the alerts, or `observeclaw.agent` with an agent ID to get that specific agent's spend, budget, utilization ratio, and recent alerts.
 
-**HTTP endpoint.** A GET request to `/plugins/observeclaw/alerts` returns the fifty most recent alerts as JSON. This endpoint requires gateway authentication. It exists for external integrations that cannot connect via WebSocket, such as monitoring tools, cron jobs, or custom dashboards.
+**HTTP endpoint.** A GET request to `/plugins/observeclaw/alerts` returns the fifty most recent alerts as JSON. This endpoint requires gateway authentication.
 
-**Outbound webhooks.** When an alert is generated, the plugin sends it as a JSON POST request to each configured webhook URL. Each webhook has a minimum severity filter, so you can send only critical alerts to PagerDuty while sending all warnings and above to Slack. Each webhook can include custom headers for authentication. Webhook dispatch is fire-and-forget: failures are logged but do not block or delay other plugin operations.
+**Outbound webhooks.** When an alert is generated, the plugin sends it as a JSON POST request to each configured webhook URL. Each webhook has a minimum severity filter. Webhook dispatch is fire-and-forget: failures are logged but do not block or delay other plugin operations. When the webhook URL contains `hooks.slack.com`, the plugin automatically formats the payload using Slack's Block Kit format.
 
-When the webhook URL contains `hooks.slack.com`, the plugin automatically formats the payload using Slack's Block Kit format with emoji indicators, structured fields for agent ID, alert type, and message, and a context block showing the severity and any actions taken. Non-Slack webhooks receive a raw JSON payload with a `source` field set to "observeclaw" and an `alert` object containing the type, agent ID, severity, message, action, metrics, and timestamp.
+## ObserveClaw Companion Server
 
-### Session lifecycle logging
+The companion server (`observeclaw-server.py`) provides two services on a single port for the plugin's routing evaluators.
 
-When a session starts, the plugin logs the session key and agent ID. When a session ends, the plugin looks up the session's accumulated spend data and logs the total cost and call count for that session. This provides a per-session cost summary in the gateway logs without requiring any additional infrastructure.
+**PII redaction proxy** (`POST /v1/messages`) sits between the gateway and the upstream LLM provider. It receives Anthropic API requests, strips PII from user messages using patterns pushed by the plugin, and forwards the cleaned request upstream. It supports both streaming and non-streaming responses. Auth headers from the incoming request are forwarded as-is, so no API key is stored on the server.
 
-### Gateway shutdown
+**Local HuggingFace classifier** (`POST /v1/chat/completions`) runs a `SequenceClassification` model locally and returns a label in the OpenAI chat completions response format. The model is configurable via `--classifier-model` or the `CLASSIFIER_MODEL` environment variable. Default: `Shaheer001/Query-Complexity-Classifier` with labels `simple`, `medium`, `complex`.
 
-When the gateway shuts down, the plugin clears all background timers and prints a final spend summary to the logs. The summary lists every tracked agent with its total spend today, total spend this month, and total call count. This provides a snapshot of the gateway's cost state at the moment it stopped.
+**Pattern push endpoint** (`POST /config/patterns`) receives PII patterns from the plugin on gateway startup. The server starts with zero hardcoded patterns.
+
+```bash
+# Full server (PII proxy + classifier)
+python observeclaw-server.py
+
+# PII proxy only (fast startup, no model loading)
+python observeclaw-server.py --no-classifier
+
+# Custom classifier model
+python observeclaw-server.py --classifier-model your-org/your-model --classifier-labels low,medium,high
+
+# Custom upstream and port
+python observeclaw-server.py --upstream https://api.anthropic.com --port 9000
+```
+
+For Ollama-based classifiers like LlamaGuard, point the plugin evaluator URL directly at `http://localhost:11434/v1/chat/completions`. The companion server is not needed for Ollama models.
 
 ## Alert Types Reference
 
@@ -367,10 +460,11 @@ extensions/observeclaw/
 │   │   └── validation.ts     Config validation (duplicate priority detection).
 │   ├── hooks/
 │   │   ├── model-resolve.ts  Budget enforcement and routing pipeline (before_model_resolve).
+│   │   ├── prompt-build.ts   No-op placeholder (user message modification not supported by hook).
 │   │   ├── llm-output.ts     Spend tracking (llm_output).
 │   │   ├── tool-hooks.ts     Tool policy enforcement and productive activity tracking.
 │   │   ├── message-hooks.ts  Outbound message cancellation and productive activity tracking.
-│   │   └── lifecycle.ts      Session and gateway lifecycle logging.
+│   │   └── lifecycle.ts      Session/gateway lifecycle, PII pattern push to proxy on startup.
 │   ├── spend-tracker.ts      In-memory per-agent and per-session spend accumulation.
 │   ├── budget-enforcer.ts    Budget threshold checks and downgrade decisions.
 │   ├── anomaly.ts            Five rule-based anomaly detectors.
@@ -417,15 +511,15 @@ Override or extend this table using the `pricing` configuration field.
 
 ## Limitations
 
-The plugin does not persist spend data across gateway restarts. When the gateway stops, all in-memory counters are lost. The final spend summary is logged, but historical data is not saved to disk. This will be addressed in a future version that adds persistent telemetry storage.
+The plugin does not persist spend data across gateway restarts. When the gateway stops, all in-memory counters are lost. The final spend summary is logged, but historical data is not saved to disk.
 
-The plugin cannot modify the user's message text before it reaches the language model. The routing pipeline includes an inline PII redaction feature that correctly identifies and replaces sensitive patterns, but OpenClaw's `before_prompt_build` hook can only modify the system prompt, not the user message. This means the redaction pipeline works at the data level (tests pass, redacted text is produced) but the actual prompt sent to the LLM still contains the original text. To deliver true inline redaction, a proxy between the agent and the LLM API is required. The message blocking feature works as an alternative: instead of redacting and forwarding, it blocks the message entirely so the LLM never sees it.
+The plugin cannot modify the user's message text before it reaches the language model. OpenClaw's `before_prompt_build` hook can only modify the system prompt, not the user message. The `proxy` action works around this by routing PII-containing messages through an external redaction proxy that strips sensitive data before forwarding to the LLM. The `block` action is the alternative when redaction is not needed: it prevents the message from reaching any model entirely.
 
-The plugin does not hide API keys from agents. Agents still hold their own provider credentials in OpenClaw's auth profiles. A scoped proxy architecture that injects keys on behalf of agents so they never see the raw key values is described in the ObserveClaw platform documentation but is not part of this plugin.
+The plugin does not hide API keys from agents. Agents still hold their own provider credentials in OpenClaw's auth profiles.
 
-The plugin does not coordinate across multiple gateway instances. Each gateway tracks its own agents independently. Fleet-wide cost aggregation requires an external control plane.
+The plugin does not coordinate across multiple gateway instances. Each gateway tracks its own agents independently.
 
-Message blocking works by forcing an unknown model override in the `before_model_resolve` hook. This causes OpenClaw to abort the LLM call before any API request is made, so zero cost is incurred. The blocked message does enter the session context as a user message, but the language model never processes it. The error message shown to the user includes the configured block reply text. Budget exceeded uses the same mechanism to hard-block all calls once the daily budget is exhausted.
+Message blocking and budget hard-block work by forcing an unknown model override in the `before_model_resolve` hook. This causes OpenClaw to abort the LLM call before any API request is made, so zero cost is incurred. The user sees an error message rather than a friendly reply.
 
 ## Running Tests
 
@@ -433,4 +527,4 @@ Message blocking works by forcing an unknown model override in the `before_model
 pnpm test -- extensions/observeclaw/
 ```
 
-The test suite includes one hundred and seven tests covering unit tests for pricing, spend tracking, budget enforcement, tool policy, and anomaly detection, scenario simulations that reproduce real-world failures including a runaway cache loop cost blowout, prompt injection tool exfiltration, LLM error loops, context window bloat, multi-agent fleet budgets, and spend spikes, end-to-end tests for the alert store, alert pipeline, webhook dispatch, and Slack formatting, and forty-seven routing tests covering regex, classifier, and webhook evaluators, priority ordering, disabled evaluators, parallel execution with timing proof, early exit optimization, message blocking, per-evaluator webhooks, inline redaction pipeline, structured routing event emission, and prompt envelope stripping.
+The test suite includes one hundred and eleven tests covering unit tests for pricing, spend tracking, budget enforcement, tool policy, and anomaly detection, scenario simulations that reproduce real-world failures including a runaway cache loop cost blowout, prompt injection tool exfiltration, LLM error loops, context window bloat, multi-agent fleet budgets, and spend spikes, end-to-end tests for the alert store, alert pipeline, webhook dispatch, and Slack formatting, six proxy action tests covering PII detection and routing through the redaction proxy with audit trail collection, five classifier block tests covering LlamaGuard-style safety filtering with safe passthrough and unsafe blocking and partial label matching and early exit optimization, and routing tests covering regex, classifier, and webhook evaluators, priority ordering, disabled evaluators, parallel execution with timing proof, early exit optimization, message blocking, per-evaluator webhooks, structured routing event emission, and prompt envelope stripping.
